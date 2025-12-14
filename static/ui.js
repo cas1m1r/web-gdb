@@ -1,4 +1,11 @@
-// static/ui.js (backward-compatible)
+// static/ui.js — robust init + target loading + breakpoint toggle normalization
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status} for ${url}`);
+  return j;
+}
 
 async function postJSON(url, data) {
   const r = await fetch(url, {
@@ -6,17 +13,15 @@ async function postJSON(url, data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data || {}),
   });
-  return r.json();
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status} for ${url}`);
+  return j;
 }
 
-async function getJSON(url) {
-  const r = await fetch(url);
-  return r.json();
-}
-
-function setStatus(s) {
+function setStatus(msg) {
   const el = document.getElementById("status");
-  if (el) el.textContent = s;
+  if (el) el.textContent = msg;
+  console.log("[WebDbg]", msg);
 }
 
 function normHex(x) {
@@ -28,24 +33,22 @@ function normHex(x) {
     const v = BigInt(s);
     return "0x" + v.toString(16);
   } catch {
-    return String(x).trim();
+    return s;
   }
+}
+
+function parseArgs(argStr) {
+  const s = (argStr || "").trim();
+  return s ? s.split(/\s+/) : [];
 }
 
 function fmtRegs(regs) {
   const keys = [
-    "rip","rsp","rbp",
-    "rax","rbx","rcx","rdx","rsi","rdi",
-    "r8","r9","r10","r11","r12","r13","r14","r15",
-    "eflags"
+    "rip","rsp","rbp","rax","rbx","rcx","rdx","rsi","rdi",
+    "r8","r9","r10","r11","r12","r13","r14","r15","eflags"
   ];
   let out = "";
-  for (const k of keys) {
-    if (regs[k] !== undefined) out += `${k.padEnd(6)} ${regs[k]}\n`;
-  }
-  const extras = Object.keys(regs).filter(k => !keys.includes(k)).slice(0, 20);
-  if (extras.length) out += "\n";
-  for (const k of extras) out += `${k.padEnd(6)} ${regs[k]}\n`;
+  for (const k of keys) if (regs[k] !== undefined) out += `${k.padEnd(6)} ${regs[k]}\n`;
   return out.trimEnd();
 }
 
@@ -53,7 +56,7 @@ function fmtFrames(frames) {
   if (!Array.isArray(frames)) return "";
   return frames.map(f => {
     const fr = f.frame || f;
-    const lvl  = fr.level ?? "?";
+    const lvl = fr.level ?? "?";
     const func = fr.func ?? "?";
     const addr = fr.addr ?? "?";
     const file = fr.file ? ` ${fr.file}:${fr.line ?? "?"}` : "";
@@ -79,22 +82,21 @@ function renderDisasm(container, disasm, regs, breakpoints) {
   if (!container) return;
   container.innerHTML = "";
 
-  const ripNorm = normHex(regs.rip);
+  const rip = normHex(regs.rip);
   const bpAddrs = new Set((breakpoints || []).map(b => normHex(b.addr)).filter(Boolean));
 
   for (const entry of (disasm || [])) {
     const insn = entry.asm_insn || entry;
     const addrRaw = insn.address || insn.addr || "";
-    const addrNorm = normHex(addrRaw);
+    const addr = normHex(addrRaw);
 
     const asm = insn.inst || insn.asm || "";
     const bytes = insn.opcodes ? `${insn.opcodes}  ` : "";
 
     const line = document.createElement("div");
     line.className = "dis-line";
-
-    if (addrNorm && ripNorm && addrNorm === ripNorm) line.classList.add("cur");
-    if (addrNorm && bpAddrs.has(addrNorm)) line.classList.add("bp");
+    if (addr && rip && addr === rip) line.classList.add("cur");
+    if (addr && bpAddrs.has(addr)) line.classList.add("bp");
 
     line.innerHTML = `
       <div class="addr">${addrRaw}</div>
@@ -102,10 +104,13 @@ function renderDisasm(container, disasm, regs, breakpoints) {
     `;
 
     line.addEventListener("click", async () => {
-      if (!addrNorm) return;
-      const res = await postJSON("/api/break/toggle", { addr: addrNorm });
-      if (res.ok) applyState(res.state);
-      else setStatus(res.error || "break toggle failed");
+      if (!addr) return;
+      try {
+        const res = await postJSON("/api/break/toggle", { addr });
+        applyState(res.state);
+      } catch (e) {
+        setStatus(`break toggle failed: ${e.message}`);
+      }
     });
 
     container.appendChild(line);
@@ -114,125 +119,95 @@ function renderDisasm(container, disasm, regs, breakpoints) {
 
 function applyState(state) {
   const regs = state.registers || {};
+  document.getElementById("regs").textContent = fmtRegs(regs);
+  document.getElementById("frames").textContent = fmtFrames(state.frames || []);
+  document.getElementById("stack").textContent = fmtStack(state.stack || [], regs);
 
-  const regsEl = document.getElementById("regs");
-  if (regsEl) regsEl.textContent = fmtRegs(regs);
-
-  const framesEl = document.getElementById("frames");
-  if (framesEl) framesEl.textContent = fmtFrames(state.frames || []);
-
-  const stackEl = document.getElementById("stack");
-  if (stackEl) stackEl.textContent = fmtStack(state.stack || [], regs);
-
-  renderDisasm(
-    document.getElementById("disasm"),
-    state.disasm || [],
-    regs,
-    state.breakpoints || []
-  );
-
+  renderDisasm(document.getElementById("disasm"), state.disasm || [], regs, state.breakpoints || []);
   const reason = (state.stop && state.stop.reason) ? state.stop.reason : state.status;
   setStatus(`${state.status} (${reason})`);
 }
 
 async function refresh() {
-  const res = await getJSON("/api/state");
-  if (res.ok) applyState(res.state);
-  else setStatus(res.error || "no session");
+  try {
+    const res = await getJSON("/api/state");
+    applyState(res.state);
+  } catch (e) {
+    setStatus(`no session yet (${e.message})`);
+  }
 }
 
-async function ctrl(action) {
-  const res = await postJSON("/api/ctrl", { action });
-  if (res.ok) applyState(res.state);
-  else setStatus(res.error || "ctrl failed");
-}
-
-function parseArgs(argStr) {
-  const s = (argStr || "").trim();
-  return s ? s.split(/\s+/) : [];
-}
-
-/**
- * Best-effort target support:
- * - If /api/targets exists AND #targetSelect exists -> populate dropdown and start with {target,args}
- * - Otherwise -> start with legacy {program,args} pointing at ./targets/demo
- */
-async function initTargets() {
+async function loadTargets() {
   const sel = document.getElementById("targetSelect");
-  if (!sel) return { mode: "legacy" };
+  if (!sel) {
+    setStatus("missing #targetSelect in HTML");
+    return;
+  }
+
+  sel.innerHTML = `<option value="">(loading...)</option>`;
 
   try {
     const res = await getJSON("/api/targets");
-    if (!res.ok || !Array.isArray(res.targets)) return { mode: "legacy" };
+    const targets = Array.isArray(res.targets) ? res.targets : [];
+
+    console.log("[WebDbg] /api/targets returned:", targets);
 
     sel.innerHTML = "";
-    for (const t of res.targets) {
+    if (targets.length === 0) {
+      sel.innerHTML = `<option value="">(no executables in ./targets)</option>`;
+      setStatus("targets list is empty — check ./targets files are executable");
+      return;
+    }
+
+    for (const t of targets) {
       const opt = document.createElement("option");
       opt.value = t;
       opt.textContent = t;
       sel.appendChild(opt);
     }
-    if (res.targets.includes("demo")) sel.value = "demo";
-    return { mode: "targets" };
-  } catch {
-    return { mode: "legacy" };
+
+    if (targets.includes("demo")) sel.value = "demo";
+    setStatus(`loaded ${targets.length} targets`);
+  } catch (e) {
+    sel.innerHTML = `<option value="">(failed to load)</option>`;
+    setStatus(`failed to load targets: ${e.message}`);
   }
 }
 
-// Wire buttons (guarded so missing elements won’t crash)
-const btnStart = document.getElementById("btnStart");
-const btnRun = document.getElementById("btnRun");
-const btnCont = document.getElementById("btnCont");
-const btnStep = document.getElementById("btnStep");
-const btnNext = document.getElementById("btnNext");
-const btnStepi = document.getElementById("btnStepi");
-const btnNexti = document.getElementById("btnNexti");
-const btnFinish = document.getElementById("btnFinish");
-const btnStop = document.getElementById("btnStop");
+async function startSession() {
+  const sel = document.getElementById("targetSelect");
+  const argsEl = document.getElementById("targetArgs");
 
-let startMode = "legacy";
+  const target = sel ? sel.value : "demo";
+  const args = parseArgs(argsEl ? argsEl.value : "");
 
-(async () => {
-  const init = await initTargets();
-  startMode = init.mode;
-})();
-
-if (btnStart) {
-  btnStart.onclick = async () => {
-    setStatus("starting...");
-
-    const argsEl = document.getElementById("targetArgs");
-    const args = parseArgs(argsEl ? argsEl.value : "");
-
-    // New mode: {target,args}
-    if (startMode === "targets") {
-      const sel = document.getElementById("targetSelect");
-      const target = sel ? sel.value : "demo";
-      const res = await postJSON("/api/start", { target, args });
-      if (res.ok) await refresh();
-      else setStatus(res.error || "start failed");
-      return;
-    }
-
-    // Legacy mode: {program,args}
-    // (works with your original /api/start)
-    const res = await postJSON("/api/start", { program: "./targets/demo", args });
-    if (res.ok) await refresh();
-    else setStatus(res.error || "start failed");
-  };
+  try {
+    await postJSON("/api/start", { target, args });
+    await refresh();
+  } catch (e) {
+    setStatus(`start failed: ${e.message}`);
+  }
 }
 
-if (btnRun) btnRun.onclick = () => ctrl("run");
-if (btnCont) btnCont.onclick = () => ctrl("continue");
-if (btnStep) btnStep.onclick = () => ctrl("step");
-if (btnNext) btnNext.onclick = () => ctrl("next");
-if (btnStepi) btnStepi.onclick = () => ctrl("stepi");
-if (btnNexti) btnNexti.onclick = () => ctrl("nexti");
-if (btnFinish) btnFinish.onclick = () => ctrl("finish");
-
-if (btnStop) {
-  btnStop.onclick = async () => {
-    await postJSON("/api/stop", {});
-    setStatus("stopped");
-  };
+function bind(id, fn) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("click", fn);
 }
+
+window.addEventListener("DOMContentLoaded", async () => {
+  setStatus("init...");
+  await loadTargets();
+
+  bind("btnStart", startSession);
+  bind("btnRun",    () => postJSON("/api/ctrl", { action: "run"    }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnCont",   () => postJSON("/api/ctrl", { action: "continue" }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnStep",   () => postJSON("/api/ctrl", { action: "step"   }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnNext",   () => postJSON("/api/ctrl", { action: "next"   }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnStepi",  () => postJSON("/api/ctrl", { action: "stepi"  }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnNexti",  () => postJSON("/api/ctrl", { action: "nexti"  }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnFinish", () => postJSON("/api/ctrl", { action: "finish" }).then(r => applyState(r.state)).catch(e => setStatus(e.message)));
+  bind("btnStop",   () => postJSON("/api/stop", {}).then(() => setStatus("stopped")).catch(e => setStatus(e.message)));
+
+  // optional: try to show state if already running
+  await refresh();
+});
