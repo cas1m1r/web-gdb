@@ -35,6 +35,17 @@
       <pre id="frames"></pre>
     </section>
 
+	<section class="panel wide">
+	  <h2>Breakpoints (manual)</h2>
+	  <div class="bpbar">
+		<input id="bpSpec" placeholder='spec: *0x401000 | main | targets/demo.c:23' />
+		<input id="bpCond" placeholder='condition (optional): $rax==0x1337' />
+		<button id="btnBpAdd">Add</button>
+		<button id="btnBpClear">Clear all</button>
+	  </div>
+	</section>
+
+
     <section class="panel wide">
       <h2>Disassembly (click an address to toggle breakpoint)</h2>
       <div id="disasm" class="mono"></div>

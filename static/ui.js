@@ -189,10 +189,41 @@ async function startSession() {
   }
 }
 
+
+
+
 function bind(id, fn) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("click", fn);
 }
+
+bind("btnBpAdd", async () => {
+  const specEl = document.getElementById("bpSpec");
+  const condEl = document.getElementById("bpCond");
+  const spec = specEl ? specEl.value.trim() : "";
+  const condition = condEl ? condEl.value.trim() : "";
+
+  if (!spec) { setStatus("enter a breakpoint spec"); return; }
+
+  try {
+    const res = await postJSON("/api/break/add", { spec, condition });
+    applyState(res.state);
+    setStatus("breakpoint added");
+  } catch (e) {
+    setStatus(`break add failed: ${e.message}`);
+  }
+});
+
+bind("btnBpClear", async () => {
+  try {
+    const res = await postJSON("/api/break/clear_all", {});
+    applyState(res.state);
+    setStatus("breakpoints cleared");
+  } catch (e) {
+    setStatus(`clear failed: ${e.message}`);
+  }
+});
+
 
 window.addEventListener("DOMContentLoaded", async () => {
   setStatus("init...");

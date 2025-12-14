@@ -141,6 +141,51 @@ def api_break_toggle():
     return jsonify({"ok": True, "state": SESSION.snapshot()})
 
 
+@app.post("/api/break/add")
+def api_break_add():
+    global SESSION
+    if not SESSION:
+        return jsonify({"ok": False, "error": "No session."}), 400
+
+    data = request.get_json(force=True, silent=True) or {}
+    spec = (data.get("spec") or "").strip()
+    cond = (data.get("condition") or "").strip()
+
+    if not spec:
+        return jsonify({"ok": False, "error": "Missing spec"}), 400
+
+    # allow entering raw hex like "0x401000" (convert to "*0x401000")
+    if spec.startswith("0x") or all(c in "0123456789abcdefABCDEF" for c in spec):
+        if not spec.startswith("*"):
+            if not spec.startswith("0x"):
+                spec = "0x" + spec
+            spec = "*" + spec
+
+    # If you extended break_insert to accept condition, use it:
+    # SESSION.break_insert(spec, condition=cond or None)
+    # Otherwise: simplest MVP: ignore condition for now.
+    SESSION.break_insert(spec)
+
+    # If you want condition now, add this to gdbmi.py: break_insert(spec, condition=None)
+    # and call it above.
+
+    return jsonify({"ok": True, "state": SESSION.snapshot()})
+
+
+@app.post("/api/break/clear_all")
+def api_break_clear_all():
+    global SESSION
+    if not SESSION:
+        return jsonify({"ok": False, "error": "No session."}), 400
+
+    for bp in SESSION.list_breakpoints():
+        n = bp.get("number")
+        if n:
+            SESSION.break_delete(str(n))
+
+    return jsonify({"ok": True, "state": SESSION.snapshot()})
+
+
 @app.post("/api/stop")
 def api_stop():
     global SESSION
