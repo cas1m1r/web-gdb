@@ -1,0 +1,105 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #111a33;
+  --border: #2a355a;
+  --text: #e6e8f2;
+  --muted: #aab1cc;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: rgba(11,16,32,0.95);
+  backdrop-filter: blur(6px);
+}
+
+.title { font-weight: 700; letter-spacing: 0.5px; }
+
+.controls button {
+  margin-right: 6px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.controls button:hover { border-color: #5a6fd6; }
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  min-height: 240px;
+}
+
+.panel.wide { grid-column: 1 / span 2; }
+
+h2 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+pre, .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
+.dis-line {
+  display: flex;
+  gap: 12px;
+  padding: 3px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.dis-line:hover { background: rgba(255,255,255,0.05); }
+
+.addr { color: #8fb3ff; min-width: 120px; }
+.cur  { outline: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.04); }
+.bp   { border-left: 4px solid #ff5aa5; padding-left: 2px; }
+
+footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.controls select, .controls input {
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  margin-right: 6px;
+}
+.controls input { width: 220px; }
+
