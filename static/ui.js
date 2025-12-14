@@ -1,4 +1,4 @@
-// static/ui.js
+// static/ui.js (backward-compatible)
 
 async function postJSON(url, data) {
   const r = await fetch(url, {
@@ -15,27 +15,16 @@ async function getJSON(url) {
 }
 
 function setStatus(s) {
-  document.getElementById("status").textContent = s;
+  const el = document.getElementById("status");
+  if (el) el.textContent = s;
 }
 
-/**
- * Normalize a hex-ish address string to canonical "0x<lowercase>" form.
- * Handles:
- *  - "0x40113a"
- *  - "0x000000000040113a"
- *  - (if GDB ever returns) "40113a"
- */
 function normHex(x) {
   if (!x) return "";
   let s = String(x).trim();
   if (!s) return "";
-
-  // BigInt() supports 0x... directly.
-  // If missing 0x, try prefixing.
   try {
-    if (!s.startsWith("0x") && /^[0-9a-fA-F]+$/.test(s)) {
-      s = "0x" + s;
-    }
+    if (!s.startsWith("0x") && /^[0-9a-fA-F]+$/.test(s)) s = "0x" + s;
     const v = BigInt(s);
     return "0x" + v.toString(16);
   } catch {
@@ -54,19 +43,16 @@ function fmtRegs(regs) {
   for (const k of keys) {
     if (regs[k] !== undefined) out += `${k.padEnd(6)} ${regs[k]}\n`;
   }
-
-  // show a small set of extras (helps on other archs / gdb versions)
   const extras = Object.keys(regs).filter(k => !keys.includes(k)).slice(0, 20);
   if (extras.length) out += "\n";
   for (const k of extras) out += `${k.padEnd(6)} ${regs[k]}\n`;
-
   return out.trimEnd();
 }
 
 function fmtFrames(frames) {
   if (!Array.isArray(frames)) return "";
   return frames.map(f => {
-    const fr = f.frame || f; // MI often wraps as {frame:{...}}
+    const fr = f.frame || f;
     const lvl  = fr.level ?? "?";
     const func = fr.func ?? "?";
     const addr = fr.addr ?? "?";
@@ -78,7 +64,6 @@ function fmtFrames(frames) {
 function fmtStack(stack, regs) {
   const rsp = normHex(regs.rsp);
   const rbp = normHex(regs.rbp);
-
   let out = "";
   for (const row of (stack || [])) {
     const a = normHex(row.addr);
@@ -91,23 +76,14 @@ function fmtStack(stack, regs) {
 }
 
 function renderDisasm(container, disasm, regs, breakpoints) {
+  if (!container) return;
   container.innerHTML = "";
 
   const ripNorm = normHex(regs.rip);
-
-  // Normalize bp addresses into a set for reliable highlighting
-  const bpAddrs = new Set(
-    (breakpoints || [])
-      .map(b => normHex(b.addr))
-      .filter(Boolean)
-  );
+  const bpAddrs = new Set((breakpoints || []).map(b => normHex(b.addr)).filter(Boolean));
 
   for (const entry of (disasm || [])) {
-    // MI shape can vary:
-    // - {address,inst,opcodes}
-    // - {asm_insn:{address,inst,opcodes}}
     const insn = entry.asm_insn || entry;
-
     const addrRaw = insn.address || insn.addr || "";
     const addrNorm = normHex(addrRaw);
 
@@ -120,8 +96,6 @@ function renderDisasm(container, disasm, regs, breakpoints) {
     if (addrNorm && ripNorm && addrNorm === ripNorm) line.classList.add("cur");
     if (addrNorm && bpAddrs.has(addrNorm)) line.classList.add("bp");
 
-    // Display the *raw* address (nice to see what gdb reports),
-    // but logic uses normalized addresses.
     line.innerHTML = `
       <div class="addr">${addrRaw}</div>
       <div class="mono">${bytes}${asm}</div>
@@ -129,7 +103,6 @@ function renderDisasm(container, disasm, regs, breakpoints) {
 
     line.addEventListener("click", async () => {
       if (!addrNorm) return;
-      // Send normalized form so backend can match consistently too
       const res = await postJSON("/api/break/toggle", { addr: addrNorm });
       if (res.ok) applyState(res.state);
       else setStatus(res.error || "break toggle failed");
@@ -141,9 +114,15 @@ function renderDisasm(container, disasm, regs, breakpoints) {
 
 function applyState(state) {
   const regs = state.registers || {};
-  document.getElementById("regs").textContent = fmtRegs(regs);
-  document.getElementById("frames").textContent = fmtFrames(state.frames || []);
-  document.getElementById("stack").textContent = fmtStack(state.stack || [], regs);
+
+  const regsEl = document.getElementById("regs");
+  if (regsEl) regsEl.textContent = fmtRegs(regs);
+
+  const framesEl = document.getElementById("frames");
+  if (framesEl) framesEl.textContent = fmtFrames(state.frames || []);
+
+  const stackEl = document.getElementById("stack");
+  if (stackEl) stackEl.textContent = fmtStack(state.stack || [], regs);
 
   renderDisasm(
     document.getElementById("disasm"),
@@ -168,61 +147,92 @@ async function ctrl(action) {
   else setStatus(res.error || "ctrl failed");
 }
 
-async function loadTargets() {
-  const res = await getJSON("/api/targets");
-  if (!res.ok) {
-    setStatus(res.error || "failed to load targets");
-    return;
-  }
-
-  const sel = document.getElementById("targetSelect");
-  sel.innerHTML = "";
-
-  for (const t of (res.targets || [])) {
-    const opt = document.createElement("option");
-    opt.value = t;
-    opt.textContent = t;
-    sel.appendChild(opt);
-  }
-
-  // Prefer demo if present
-  if ((res.targets || []).includes("demo")) sel.value = "demo";
-}
-
 function parseArgs(argStr) {
-  // MVP: split on whitespace. (Later you can do shell-like quoting.)
   const s = (argStr || "").trim();
   return s ? s.split(/\s+/) : [];
 }
 
-// Wire buttons
-document.getElementById("btnStart").onclick = async () => {
-  setStatus("starting...");
+/**
+ * Best-effort target support:
+ * - If /api/targets exists AND #targetSelect exists -> populate dropdown and start with {target,args}
+ * - Otherwise -> start with legacy {program,args} pointing at ./targets/demo
+ */
+async function initTargets() {
+  const sel = document.getElementById("targetSelect");
+  if (!sel) return { mode: "legacy" };
 
-  const target = document.getElementById("targetSelect").value;
-  const argsStr = document.getElementById("targetArgs").value;
-  const args = parseArgs(argsStr);
+  try {
+    const res = await getJSON("/api/targets");
+    if (!res.ok || !Array.isArray(res.targets)) return { mode: "legacy" };
 
-  const res = await postJSON("/api/start", { target, args });
-  if (res.ok) await refresh();
-  else setStatus(res.error || "start failed");
-};
+    sel.innerHTML = "";
+    for (const t of res.targets) {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t;
+      sel.appendChild(opt);
+    }
+    if (res.targets.includes("demo")) sel.value = "demo";
+    return { mode: "targets" };
+  } catch {
+    return { mode: "legacy" };
+  }
+}
 
-document.getElementById("btnRun").onclick    = () => ctrl("run");
-document.getElementById("btnCont").onclick   = () => ctrl("continue");
-document.getElementById("btnStep").onclick   = () => ctrl("step");
-document.getElementById("btnNext").onclick   = () => ctrl("next");
-document.getElementById("btnStepi").onclick  = () => ctrl("stepi");
-document.getElementById("btnNexti").onclick  = () => ctrl("nexti");
-document.getElementById("btnFinish").onclick = () => ctrl("finish");
+// Wire buttons (guarded so missing elements won’t crash)
+const btnStart = document.getElementById("btnStart");
+const btnRun = document.getElementById("btnRun");
+const btnCont = document.getElementById("btnCont");
+const btnStep = document.getElementById("btnStep");
+const btnNext = document.getElementById("btnNext");
+const btnStepi = document.getElementById("btnStepi");
+const btnNexti = document.getElementById("btnNexti");
+const btnFinish = document.getElementById("btnFinish");
+const btnStop = document.getElementById("btnStop");
 
-document.getElementById("btnStop").onclick = async () => {
-  await postJSON("/api/stop", {});
-  setStatus("stopped");
-};
+let startMode = "legacy";
 
-// Init
-loadTargets().then(() => {
-  // optional: auto-refresh if a session already exists
-  // refresh();
-});
+(async () => {
+  const init = await initTargets();
+  startMode = init.mode;
+})();
+
+if (btnStart) {
+  btnStart.onclick = async () => {
+    setStatus("starting...");
+
+    const argsEl = document.getElementById("targetArgs");
+    const args = parseArgs(argsEl ? argsEl.value : "");
+
+    // New mode: {target,args}
+    if (startMode === "targets") {
+      const sel = document.getElementById("targetSelect");
+      const target = sel ? sel.value : "demo";
+      const res = await postJSON("/api/start", { target, args });
+      if (res.ok) await refresh();
+      else setStatus(res.error || "start failed");
+      return;
+    }
+
+    // Legacy mode: {program,args}
+    // (works with your original /api/start)
+    const res = await postJSON("/api/start", { program: "./targets/demo", args });
+    if (res.ok) await refresh();
+    else setStatus(res.error || "start failed");
+  };
+}
+
+if (btnRun) btnRun.onclick = () => ctrl("run");
+if (btnCont) btnCont.onclick = () => ctrl("continue");
+if (btnStep) btnStep.onclick = () => ctrl("step");
+if (btnNext) btnNext.onclick = () => ctrl("next");
+if (btnStepi) btnStepi.onclick = () => ctrl("stepi");
+if (btnNexti) btnNexti.onclick = () => ctrl("nexti");
+if (btnFinish) btnFinish.onclick = () => ctrl("finish");
+
+if (btnStop) {
+  btnStop.onclick = async () => {
+    await postJSON("/api/stop", {});
+    setStatus("stopped");
+  };
+}
